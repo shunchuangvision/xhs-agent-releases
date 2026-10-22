@@ -22,8 +22,10 @@
 
 ## 维护者
 
-GitHub Actions 的 `Build macOS` 工作流在 Apple 芯片和 Intel Mac 上分别构建。基础业务代码来自对应 Windows Release 的签名更新包，`macos/launcher` 提供共用启动器的 Mac 适配层。正式更新应先发布同版本 Windows 更新资产，再运行本工作流；发布新 Release 前，三个平台的资产都应齐全。
+GitHub Actions 的 `Build macOS` 工作流在 Apple 芯片和 Intel Mac 上分别构建。基础业务代码来自对应 Windows Release 的签名更新包，`macos/launcher` 提供共用启动器的 Mac 适配层。后续版本先创建预发布（Pre-release），附带同版本 Windows 的签名更新资产，再运行 Mac 构建；三个平台资产与签名齐全后，才把版本设为正式发布和 Latest，以免现有启动器检查到不完整的发布。
 
-工作流只产生待签名构建产物，签名私钥不上传 GitHub。下载 Actions 产物后，在发布电脑执行 `macos/sign_release.py`，再运行 `gh release upload` 上传 Mac 的 DMG、ZIP、更新 ZIP、对应 JSON 和 SIG 文件。保留已有 Windows 的 `update-manifest.json` 和 `update-manifest.sig`。
+工作流只产生待签名构建产物，签名私钥不上传 GitHub。下载 Actions 产物后，在发布电脑执行 `macos/sign_release.py`，再运行 `gh release upload` 上传 Mac 的 DMG、ZIP、更新 ZIP、对应 JSON 和 SIG 文件。也可运行 `Publish tested macOS artifacts`，把通过验收的安装包从 Actions 直接上传到预发布；发布电脑核验其清单与 GitHub 文件摘要后本地签名，只上传 SIG 文件。保留已有 Windows 的 `update-manifest.json` 和 `update-manifest.sig`。
+
+转为正式发布后运行 `Verify published macOS updates`，确认两个芯片版本均能从公开 GitHub 地址检查、下载、验签并完成升级。该验收仅使用临时目录及演示数据。
 
 `ci_test.py` 使用一次性测试签名密钥和演示数据验证应用启动、文案生成、Worker、签名升级、数据保留和升级后原生窗口。正式发布密钥不会用于测试。
