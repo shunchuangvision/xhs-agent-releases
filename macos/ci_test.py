@@ -1,0 +1,152 @@
+"""Exercise the actual frozen runtime on each native GitHub macOS runner."""
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def outer(build):
+    env = os.environ.copy()
+    root = build / 'qa/用户资料 XHS Agent'
+    env['XHS_AGENT_DATA_HOME'] = str(root)
+    env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+    # Launch the actual .app native entry point and its first-install path.
+    bootstrap = build / 'XHS-Agent.app/Contents/MacOS/XHS-Agent'
+    subprocess.run([bootstrap, '--smoke'], env=env, check=True, timeout=90)
+    info = json.loads((root / 'version.json').read_text())
+    original_runtime = root / 'launcher/deps' / info['dependencies'] / 'xhs-runtime'
+    old_runtime = root / 'launcher/deps/3.1.9/xhs-runtime'
+    old_runtime.parent.mkdir(parents=True)
+    shutil.copy2(original_runtime, old_runtime)
+    info.update(version='3.1.9', dependencies='3.1.9')
+    (root / 'version.json').write_text(json.dumps(info))
+    original_runtime.unlink()
+    subprocess.run([old_runtime, '-s', Path(__file__).resolve(), build, '--inside', root],
+                   env=env, cwd=root, check=True, timeout=200)
+    # Opening the originally downloaded .app must retain the upgraded installation.
+    before = (root / '.env').read_bytes()
+    subprocess.run([bootstrap, '--smoke'], env=env, check=True, timeout=90)
+    assert (root / '.env').read_bytes() == before
+    result = build / 'release' / ('test-result-' + json.loads((root / 'version.json').read_text())['platform'] + '.json')
+    value = json.loads(result.read_text()); value['finder_bootstrap_and_reopen'] = True
+    result.write_text(json.dumps(value, indent=2))
+
+
+def inside(build, root):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+    sys.path.insert(0, str(root / 'launcher'))
+    import core
+    target_platform = core.platform_id()
+    release = build / 'release'
+    raw = (release / f'update-manifest-{target_platform}.json').read_bytes()
+    manifest = json.loads(raw)
+    key = Ed25519PrivateKey.generate()
+    public = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    # Tests use a throwaway trust anchor in the isolated QA directory only.
+    (root / 'launcher/release-public.pem').write_bytes(public)
+    sig = json.dumps({'algorithm': 'Ed25519', 'key_id': hashlib.sha256(public).hexdigest(),
+                     'signature': base64.b64encode(key.sign(raw)).decode()}).encode()
+    core.atomic_json(root / 'launcher-config.json', {'repository': core.REPOSITORY, 'port': 18018})
+    (root / '.env').write_text('LLM_PROVIDER=demo\nAPP_TOKEN=mac-ci-only\nV3_EMBEDDED_WORKER=1\n')
+    before_env = (root / '.env').read_bytes()
+    base = 'http://127.0.0.1:18018'
+
+    def api(path, method='GET', body=None):
+        request = urllib.request.Request(base + '/api' + path, method=method,
+            headers={'Authorization': 'Bearer mac-ci-only', 'Content-Type': 'application/json'},
+            data=None if body is None else json.dumps(body).encode())
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+
+    def records():
+        with sqlite3.connect(root / 'data/xhs-agent.db') as db:
+            return dict(db.execute('SELECT id,data FROM records'))
+
+    try:
+        state = core.start_service(root, progress=print)
+        assert state['version'] == '3.1.9'
+        assert api('/health')['status'] == 'ok'
+        assert urllib.request.urlopen(base, timeout=10).status == 200
+        try:
+            urllib.request.urlopen(base + '/_launcher/status')
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403
+        else:
+            raise AssertionError('Unauthenticated control accepted')
+        project = api('/projects', 'POST', {'product_name': 'Mac 验收保温杯', 'category': '生活好物',
+                                          'audience': '通勤人群', 'facts': {'容量': '350ml'}})
+        api('/projects/' + project['id'] + '/generate', 'POST', {'count': 1})
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            workspace = api('/projects/' + project['id'] + '/workspace')
+            if workspace['copies'] and workspace['tasks'][0]['status'] == 'succeeded':
+                break
+            time.sleep(.4)
+        assert len(workspace['copies']) == 1
+        before = records()
+        with sqlite3.connect(root / 'data/xhs-agent.db') as db:
+            db.execute('INSERT INTO records(id,kind,project_id,created_at,data) VALUES (?,?,?,?,?)',
+                       ('qa-busy', 'task', project['id'], '2026-10-22', '{"status":"running"}'))
+        try:
+            core.stop_service(root)
+        except core.LauncherError as exc:
+            assert '任务' in str(exc)
+        else:
+            raise AssertionError('Busy service was stopped')
+        with sqlite3.connect(root / 'data/xhs-agent.db') as db:
+            db.execute('DELETE FROM records WHERE id=?', ('qa-busy',))
+        with core.installation_lock(root):
+            core.apply_package(root, release / manifest['archive'], raw, sig, print)
+        assert not core.process_alive(state['pid'])
+        assert core.current_version(root)['version'] == manifest['version']
+        assert core.control(root)['maintenance'] is False
+        assert (root / '.env').read_bytes() == before_env
+        assert core.config(root)['port'] == 18018
+        assert all(records()[k] == v for k, v in before.items())
+        assert core.python_path(root).parent.name == manifest['version']
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            console = api('/v3/projects/' + project['id'] + '/console')
+            if console['worker']['online']:
+                break
+            time.sleep(.5)
+        assert console['worker']['online']
+        core.stop_service(root, print)
+        import ui
+        ui.ROOT = root
+        window = ui.Launcher(); window.withdraw()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            window.update(); time.sleep(.05)
+        assert not window.working and window.state_text.get() == '服务未启动'
+        window.destroy()
+        # Restore the production public key for subsequent first-launch smoke test.
+        shutil.copy2(build / 'payload/launcher/release-public.pem', root / 'launcher/release-public.pem')
+        result = {'status': 'passed', 'platform': target_platform, 'generation': True, 'native_tk_ui': True,
+                  'signed_upgrade': True, 'separate_runtime_version': True, 'data_preserved': True,
+                  'config_preserved': True, 'private_control': True, 'busy_stop_protection': True,
+                  'worker_after_upgrade': True, 'external_model_calls': 0}
+        (release / f'test-result-{target_platform}.json').write_text(json.dumps(result, indent=2))
+        print(json.dumps(result), flush=True)
+    finally:
+        try:
+            core.stop_service(root)
+        except Exception:
+            pass
+
+
+if __name__ == '__main__':
+    build = Path(sys.argv[1]).resolve()
+    if '--inside' in sys.argv:
+        inside(build, Path(sys.argv[-1]).resolve())
+    else:
+        outer(build)
