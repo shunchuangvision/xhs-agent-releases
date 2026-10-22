@@ -1,0 +1,35 @@
+name: Publish tested macOS artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Successful Build macOS run ID'
+        required: true
+      version:
+        required: true
+        default: '3.2.0'
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BUILD_RUN: ${{ inputs.run_id }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require successful native build
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" --jq .conclusion)" = success
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" --jq .name)" = 'Build macOS'
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: xhs-agent-macos-*
+          path: artifacts
+      - name: Verify payloads and publish Mac files
+        run: python3 macos/publish_artifacts.py artifacts "$VERSION"
