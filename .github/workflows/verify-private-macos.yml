@@ -1,0 +1,44 @@
+name: Verify private Mac installer with synthetic config
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        default: '3.2.2'
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: macos-arm64
+          - runner: macos-15-intel
+            platform: macos-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      PLATFORM: ${{ matrix.platform }}
+      XHS_AGENT_DATA_HOME: ${{ github.workspace }}/private-qa/用户资料 XHS Agent
+      XHS_PRIVATE_APPLICATIONS_DIR: ${{ github.workspace }}/private-qa/用户应用程序
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download public application without private config
+        run: |
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "xhs-agent-$VERSION-$PLATFORM.zip" --dir download
+          ditto -x -k "download/xhs-agent-$VERSION-$PLATFORM.zip" download
+          codesign --verify --deep --strict download/XHS-Agent.app
+      - name: Test offline import and signed public update using fake credentials
+        run: python macos/test_private_bundle.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: private-installer-test-${{ matrix.platform }}
+          path: private-qa/private-test-*.json
