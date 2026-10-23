@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from zipfile import ZipFile
 
 
 def outer(build):
@@ -38,6 +39,12 @@ def outer(build):
     # Launch the actual .app native entry point and its first-install path.
     bootstrap = build / 'XHS-Agent.app/Contents/MacOS/XHS-Agent'
     subprocess.run([bootstrap, '--smoke'], env=env, check=True, timeout=90)
+    # A complete Mac installation includes the same browser capture extension as Windows.
+    with ZipFile(build / 'source-windows.zip') as archive:
+        extension_files = [name for name in archive.namelist() if name.startswith('extension/')]
+        assert extension_files
+        for name in extension_files:
+            assert (root / name).read_bytes() == archive.read(name)
     info = json.loads((root / 'version.json').read_text())
     original_runtime = root / 'launcher/deps' / info['dependencies'] / 'xhs-runtime'
     old_runtime = root / 'launcher/deps/3.1.9/xhs-runtime'
@@ -54,6 +61,7 @@ def outer(build):
     assert (root / '.env').read_bytes() == before
     result = build / 'release' / ('test-result-' + json.loads((root / 'version.json').read_text())['platform'] + '.json')
     value = json.loads(result.read_text()); value['finder_bootstrap_and_reopen'] = True
+    value['browser_extension_included'] = True
     result.write_text(json.dumps(value, indent=2))
     provider.shutdown()
 

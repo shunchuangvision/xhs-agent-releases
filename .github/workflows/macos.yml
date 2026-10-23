@@ -3,13 +3,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version matching the destination Release (e.g. 3.2.1)'
+        description: 'Version matching the destination Release (e.g. 3.2.2)'
         required: true
-        default: '3.2.1'
+        default: '3.2.2'
       base_version:
         description: 'Signed Windows Release providing app source'
         required: true
-        default: '3.2.1'
+        default: '3.2.2'
 permissions:
   contents: read
 jobs:

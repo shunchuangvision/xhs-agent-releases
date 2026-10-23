@@ -42,7 +42,7 @@ def prepare_source(output, base_version, version):
     payload.mkdir()
     with zipfile.ZipFile(download) as archive:
         for name, info in manifest['files'].items():
-            if not (name.startswith(('backend/app/', 'frontend/dist/', 'docs/')) or name in ('.env.example', 'backend/requirements.txt', 'README.md')):
+            if not (name.startswith(('backend/app/', 'frontend/dist/', 'docs/', 'extension/')) or name in ('.env.example', 'backend/requirements.txt', 'README.md')):
                 continue
             target = core.contained(payload, name)
             data = archive.read(name)
