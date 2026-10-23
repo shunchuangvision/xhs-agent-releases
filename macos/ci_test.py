@@ -14,6 +14,23 @@ import urllib.request
 
 
 def outer(build):
+    # Run the provider stub in the host Python, independent of the frozen application.
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+    class Provider(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            if self.headers.get('Authorization') != 'Bearer mac-ci-synthetic-key':
+                self.send_response(401); self.end_headers(); return
+            body = b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+    provider = ThreadingHTTPServer(('127.0.0.1', 18022), Provider)
+    threading.Thread(target=provider.serve_forever, daemon=True).start()
     env = os.environ.copy()
     root = build / 'qa/用户资料 XHS Agent'
     env['XHS_AGENT_DATA_HOME'] = str(root)
@@ -38,6 +55,7 @@ def outer(build):
     result = build / 'release' / ('test-result-' + json.loads((root / 'version.json').read_text())['platform'] + '.json')
     value = json.loads(result.read_text()); value['finder_bootstrap_and_reopen'] = True
     result.write_text(json.dumps(value, indent=2))
+    provider.shutdown()
 
 
 def inside(build, root):
@@ -104,12 +122,22 @@ def inside(build, root):
             raise AssertionError('Busy service was stopped')
         with sqlite3.connect(root / 'data/xhs-agent.db') as db:
             db.execute('DELETE FROM records WHERE id=?', ('qa-busy',))
+        config = api('/model-config')
+        assert not config['configured']
+        saved = api('/model-config', 'PUT', {'base_url': 'http://127.0.0.1:18022/v1',
+            'model': 'mac-ci-model', 'api_key': 'mac-ci-synthetic-key', 'revision': config['revision']})
+        assert saved['configured'] and 'mac-ci-synthetic-key' not in json.dumps(saved)
+        assert api('/health')['model'] == 'mac-ci-model'
+        before_env = (root / '.env').read_bytes()
+        assert b'APP_TOKEN=mac-ci-only' in before_env
         with core.installation_lock(root):
             core.apply_package(root, release / manifest['archive'], raw, sig, print)
         assert not core.process_alive(state['pid'])
         assert core.current_version(root)['version'] == manifest['version']
         assert core.control(root)['maintenance'] is False
         assert (root / '.env').read_bytes() == before_env
+        assert api('/model-config')['configured']
+        assert api('/health')['model'] == 'mac-ci-model'
         assert core.config(root)['port'] == 18018
         assert all(records()[k] == v for k, v in before.items())
         assert core.python_path(root).parent.name == manifest['version']
@@ -134,7 +162,8 @@ def inside(build, root):
         result = {'status': 'passed', 'platform': target_platform, 'generation': True, 'native_tk_ui': True,
                   'signed_upgrade': True, 'separate_runtime_version': True, 'data_preserved': True,
                   'config_preserved': True, 'private_control': True, 'busy_stop_protection': True,
-                  'worker_after_upgrade': True, 'external_model_calls': 0}
+                  'worker_after_upgrade': True, 'web_model_setup': True, 'saved_model_after_upgrade': True,
+                  'external_model_calls': 0}
         (release / f'test-result-{target_platform}.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result), flush=True)
     finally:
