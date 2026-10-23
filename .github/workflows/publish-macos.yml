@@ -7,7 +7,7 @@ on:
         required: true
       version:
         required: true
-        default: '3.2.0'
+        default: '3.2.1'
 permissions:
   actions: read
   contents: write
