@@ -22,10 +22,11 @@ def outer(build):
         def log_message(self, *args):
             pass
         def do_POST(self):
-            self.rfile.read(int(self.headers['Content-Length']))
+            raw = self.rfile.read(int(self.headers['Content-Length']))
             if self.headers.get('Authorization') != 'Bearer mac-ci-synthetic-key':
                 self.send_response(401); self.end_headers(); return
-            body = b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}'
+            from media_test import provider_reply
+            body = json.dumps(provider_reply(self.path, raw)).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -136,6 +137,8 @@ def inside(build, root):
             'model': 'mac-ci-model', 'api_key': 'mac-ci-synthetic-key', 'revision': config['revision']})
         assert saved['configured'] and 'mac-ci-synthetic-key' not in json.dumps(saved)
         assert api('/health')['model'] == 'mac-ci-model'
+        from media_test import configure, exercise as exercise_media
+        configure(api)
         before_env = (root / '.env').read_bytes()
         assert b'APP_TOKEN=mac-ci-only' in before_env
         with core.installation_lock(root):
@@ -156,6 +159,7 @@ def inside(build, root):
                 break
             time.sleep(.5)
         assert console['worker']['online']
+        media_result = exercise_media(api, base, 'mac-ci-only', project['id'])
         core.stop_service(root, print)
         import ui
         ui.ROOT = root
@@ -175,6 +179,7 @@ def inside(build, root):
                   'worker_after_upgrade': True, 'web_model_setup': True, 'saved_model_after_upgrade': True,
                   'external_model_calls': 0}
         result.update(ui_result)
+        result.update(media_result)
         (release / f'test-result-{target_platform}.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result), flush=True)
     finally:
