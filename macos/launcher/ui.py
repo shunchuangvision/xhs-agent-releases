@@ -304,7 +304,7 @@ class Launcher(tk.Tk):
 
     def settings(self):
         saved = core.config(ROOT)
-        dialog = tk.Toplevel(self); dialog.title('启动器设置'); dialog.geometry('580x340'); dialog.transient(self); dialog.grab_set()
+        dialog = tk.Toplevel(self); dialog.title('启动器设置'); dialog.geometry('580x420'); dialog.minsize(580, 420); dialog.transient(self); dialog.grab_set()
         frame = tk.Frame(dialog, bg=CARD, padx=24, pady=24); frame.pack(fill='both', expand=True)
         repository = tk.StringVar(value=saved['repository']); port = tk.StringVar(value=str(saved['port']))
         self.label(frame, '更新与连接', size=17, bold=True).pack(anchor='w', pady=(0, 18))

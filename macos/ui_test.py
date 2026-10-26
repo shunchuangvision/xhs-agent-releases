@@ -70,6 +70,19 @@ def exercise(ui, root, output):
         assert '打开工作台' in window.launch_button.cget('text')
         window.stop_button.invoke(); wait(lambda: not window.working)
         assert not window.running and not enabled(window.stop_button)
+        window.settings(); window.update()
+        dialog = next(w for w in window.winfo_children() if isinstance(w, ui.tk.Toplevel))
+        frame = dialog.winfo_children()[0]
+        entries = [w for w in frame.winfo_children() if isinstance(w, ui.ttk.Entry)]
+        save = next(w for w in frame.winfo_children() if isinstance(w, ui.ttk.Button))
+        assert save.winfo_ismapped() and save.winfo_height() >= save.winfo_reqheight()
+        assert save.winfo_rooty() + save.winfo_height() <= dialog.winfo_rooty() + dialog.winfo_height()
+        entries[-1].delete(0, 'end'); entries[-1].insert(0, '1')
+        save.invoke(); assert errors and dialog.winfo_exists()
+        entries[-1].delete(0, 'end'); entries[-1].insert(0, '18019')
+        save.invoke(); window.update()
+        assert ui.core.config(root)['port'] == 18019
+        errors.clear()
         window.check_button.invoke(); wait(lambda: not window.working)
         assert enabled(window.install_button) and enabled(window.notes_button)
         window.notes_button.invoke(); window.update()
@@ -99,7 +112,8 @@ def exercise(ui, root, output):
         # Closing cancels callbacks; no callbacks from destroyed windows affect the next launch.
         window.close(); assert window._closed and not window._timers
         return {'ui_state_transitions': True, 'ui_error_retry': True, 'ui_busy_guard': True,
-                'ui_layout_at_minimum_size': True, 'ui_screenshots': True, 'external_model_calls': 0}
+                'ui_layout_at_minimum_size': True, 'ui_settings_validation': True,
+                'ui_screenshots': True, 'external_model_calls': 0}
     finally:
         if window is not None and not window._closed:
             window.destroy()
