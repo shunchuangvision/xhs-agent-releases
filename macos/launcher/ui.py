@@ -1,4 +1,4 @@
-"""Small native launcher; all network/install work stays off the UI thread."""
+"""Native launcher; all network and service work stays off the UI thread."""
 import os
 from pathlib import Path
 import queue
@@ -15,96 +15,178 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'launcher'))
 import core
 FONT = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei UI'
+BG, CARD, INK, MUTED, GREEN = '#f3f5f1', '#ffffff', '#203c34', '#687a71', '#245c4d'
 
 
 class Launcher(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('XHS Agent · 启动器')
-        self.geometry('780x620')
-        self.minsize(700, 570)
-        self.configure(bg='#f4f7f5')
+        self.title('XHS Agent · 内容工作台')
+        self.geometry('920x700')
+        self.minsize(900, 700)
+        self.configure(bg=BG)
         self.events = queue.Queue()
         self.working = False
+        self.running = False
+        self.ready = False
         self.update_info = None
+        self.release_notes = ''
         self.buttons = []
-        style = ttk.Style(self)
-        style.theme_use('clam')
-        style.configure('TButton', font=(FONT, 10), padding=(15, 10))
-        style.configure('Primary.TButton', background='#245c4d', foreground='white')
-        style.map('Primary.TButton', background=[('active', '#34715e'), ('disabled', '#90a99e')])
-        style.configure('TLabel', background='#f4f7f5', font=(FONT, 10))
-        style.configure('TFrame', background='#f4f7f5')
-        outer = ttk.Frame(self, padding=28)
+        self._timers = []
+        self._closed = False
+        self._styles()
+        outer = tk.Frame(self, bg=BG, padx=30, pady=26)
         outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='XHS Agent', font=(FONT, 26, 'bold'), foreground='#245c4d').pack(anchor='w')
-        ttk.Label(outer, text='启动你的内容工作台，持续获取新功能', foreground='#748579').pack(anchor='w', pady=(4, 20))
-        self.version = tk.StringVar(value='当前版本  ' + core.current_version(ROOT)['version'])
-        self.state_text = tk.StringVar(value='正在检查本地服务…')
-        row = ttk.Frame(outer); row.pack(fill='x')
-        ttk.Label(row, textvariable=self.version, font=(FONT, 11, 'bold')).pack(side='left')
-        ttk.Label(row, textvariable=self.state_text, foreground='#607366').pack(side='right')
-        actions = ttk.Frame(outer); actions.pack(fill='x', pady=(18, 14))
-        self.button(actions, '启动并打开系统', self.launch, 'Primary.TButton')
-        self.button(actions, '打开页面', self.open_page)
-        self.button(actions, '停止服务', self.stop)
-        ttk.Separator(outer).pack(fill='x', pady=8)
-        update_row = ttk.Frame(outer); update_row.pack(fill='x', pady=(14, 6))
-        ttk.Label(update_row, text='版本更新', font=(FONT, 13, 'bold')).pack(side='left')
-        self.button(update_row, '检查更新', self.check, side='right')
-        self.install_button = self.button(update_row, '下载并安装', self.install, 'Primary.TButton', side='right')
-        self.install_button.configure(state='disabled')
-        self.release_text = tk.StringVar(value='点击检查更新，获取 GitHub 上发布的最新正式版本。')
-        ttk.Label(outer, textvariable=self.release_text, wraplength=700).pack(anchor='w', pady=(4, 10))
-        self.notes = tk.Text(outer, height=8, relief='flat', bg='white', fg='#42594c', wrap='word',
-                             padx=14, pady=12, font=(FONT, 10))
-        self.notes.pack(fill='both', expand=True)
-        self.set_notes('日常使用\n\n启动后会自动打开浏览器。关闭启动器不会停止正在运行的系统。\n\n更新会保留本地模型配置、文案数据库和图片素材。')
-        self.progress = ttk.Progressbar(outer, mode='indeterminate')
-        self.progress.pack(fill='x', pady=(16, 8))
-        self.message = tk.StringVar(value='准备就绪')
-        ttk.Label(outer, textvariable=self.message, wraplength=700, foreground='#607366').pack(anchor='w')
-        bottom = ttk.Frame(outer); bottom.pack(fill='x', pady=(16, 0))
-        self.button(bottom, '更新源与端口', self.settings)
-        self.button(bottom, '打开日志', self.logs)
-        self.button(bottom, '发布页面', lambda: webbrowser.open('https://github.com/' + core.config(ROOT)['repository'] + '/releases'), side='right')
-        self.protocol('WM_DELETE_WINDOW', self.close)
-        self.after(100, self.drain)
-        self.after(200, self.initialize)
+        header = tk.Frame(outer, bg=BG)
+        header.pack(fill='x', pady=(0, 26))
+        mark = tk.Canvas(header, width=48, height=48, bg=BG, highlightthickness=0)
+        mark.pack(side='left', padx=(0, 14))
+        mark.create_oval(1, 1, 47, 47, fill=GREEN, outline='')
+        mark.create_line(16, 15, 32, 33, fill='white', width=3)
+        mark.create_line(32, 15, 16, 33, fill='white', width=3)
+        identity = tk.Frame(header, bg=BG); identity.pack(side='left')
+        self.label(identity, 'XHS Agent', size=22, bold=True).pack(anchor='w')
+        self.label(identity, '小红书 AI 内容工作台', color=MUTED).pack(anchor='w', pady=(2, 0))
+        self.version = tk.StringVar(value='v' + core.current_version(ROOT)['version'])
+        self.label(header, variable=self.version, color=MUTED).pack(side='right')
 
-    def button(self, parent, text, command, style='TButton', side='left'):
+        cards = tk.Frame(outer, bg=BG)
+        cards.columnconfigure(0, weight=3, uniform='cards')
+        cards.columnconfigure(1, weight=2, uniform='cards')
+        cards.rowconfigure(0, weight=1)
+        main = self.card(cards); main.grid(row=0, column=0, sticky='nsew', padx=(0, 16))
+        update = self.card(cards); update.grid(row=0, column=1, sticky='nsew')
+        self.state_text = tk.StringVar(value='正在检查本地服务…')
+        self.state_badge = self.label(main, variable=self.state_text, color=MUTED, size=10)
+        self.state_badge.pack(anchor='w')
+        self.hero_title = tk.StringVar(value='准备你的创作空间')
+        self.label(main, variable=self.hero_title, size=23, bold=True).pack(anchor='w', pady=(22, 10))
+        self.hero_detail = tk.StringVar(value='正在确认服务状态，请稍候。')
+        self.label(main, variable=self.hero_detail, color=MUTED, wrap=410).pack(anchor='w')
+        features = tk.Frame(main, bg='#f2f6f2', padx=16, pady=14)
+        features.pack(fill='x', pady=(18, 18))
+        self.label(features, '选题灵感  /  文案生成  /  数据复盘', size=10, color=GREEN).pack(anchor='w')
+        self.label(features, '项目、素材与模型配置都会保留。', size=10, color=MUTED).pack(anchor='w', pady=(7, 0))
+        actions = tk.Frame(main, bg=CARD); actions.pack(side='bottom', fill='x')
+        self.launch_button = self.button(actions, '启动工作台', self.launch, 'Primary.TButton')
+        self.launch_button.pack(fill='x', pady=(0, 10))
+        self.stop_button = self.button(actions, '停止服务', self.stop, 'Quiet.TButton')
+        self.stop_button.pack(anchor='w')
+
+        self.label(update, '版本与更新', size=15, bold=True).pack(anchor='w')
+        self.label(update, '保持工作台常新', size=10, color=MUTED).pack(anchor='w', pady=(5, 24))
+        self.release_title = tk.StringVar(value='当前版本 ' + core.current_version(ROOT)['version'])
+        self.label(update, variable=self.release_title, size=17, bold=True).pack(anchor='w')
+        self.release_text = tk.StringVar(value='检查是否有新功能和问题修复。')
+        self.label(update, variable=self.release_text, color=MUTED, wrap=260).pack(anchor='w', pady=(10, 12))
+        self.notes_button = self.button(update, '查看更新说明  →', self.show_notes, 'Quiet.TButton')
+        self.notes_button.pack(anchor='w')
+        update_actions = tk.Frame(update, bg=CARD); update_actions.pack(side='bottom', fill='x')
+        self.install_button = self.button(update_actions, '下载并安装', self.install, 'Primary.TButton')
+        self.install_button.pack(fill='x', pady=(0, 10))
+        self.check_button = self.button(update_actions, '检查更新', self.check)
+        self.check_button.pack(fill='x')
+
+        footer = tk.Frame(outer, bg=BG); footer.pack(side='bottom', fill='x', pady=(18, 10))
+        for text, command in (('启动器设置', self.settings), ('运行日志', self.logs), ('版本发布页', self.release_page)):
+            self.button(footer, text, command, 'Footer.TButton').pack(side='left', padx=(0, 10))
+        self.label(footer, '关闭此窗口后，服务继续运行', color=MUTED, size=9).pack(side='right')
+        status = tk.Frame(outer, bg='#e9eee8', padx=14, pady=10)
+        status.pack(side='bottom', fill='x', before=footer)
+        self.message = tk.StringVar(value='正在初始化…')
+        self.message_label = self.label(status, variable=self.message, color=MUTED, size=10, wrap=780)
+        self.message_label.pack(anchor='w')
+        self.progress = ttk.Progressbar(status, mode='indeterminate', style='Green.Horizontal.TProgressbar')
+        cards.pack(fill='both', expand=True)
+        self.protocol('WM_DELETE_WINDOW', self.close)
+        self.sync_controls()
+        self._later(100, self.drain)
+        self._later(200, self.initialize)
+
+    def _styles(self):
+        style = ttk.Style(self); style.theme_use('clam')
+        style.configure('TButton', font=(FONT, 11), padding=(15, 11), background='#edf2ed',
+                        foreground=INK, borderwidth=0, focusthickness=2, focuscolor=GREEN)
+        style.map('TButton', background=[('disabled', '#f1f3ef'), ('pressed', '#dce5dc'), ('active', '#e2eae1')],
+                  foreground=[('disabled', '#9ca99f')])
+        style.configure('Primary.TButton', font=(FONT, 12, 'bold'), padding=(18, 13), background=GREEN, foreground='white')
+        style.map('Primary.TButton', background=[('disabled', '#dce5dc'), ('pressed', '#194638'), ('active', '#33705d')],
+                  foreground=[('disabled', '#87998a')])
+        style.configure('Quiet.TButton', background=CARD, padding=(2, 5), foreground=GREEN)
+        style.map('Quiet.TButton', background=[('disabled', CARD), ('active', '#eef4ee')])
+        style.configure('Footer.TButton', background=BG, padding=(2, 7), foreground=MUTED, font=(FONT, 10))
+        style.map('Footer.TButton', background=[('disabled', BG), ('active', '#e4ebe2')])
+        style.configure('Green.Horizontal.TProgressbar', background=GREEN, troughcolor='#dbe5da', borderwidth=0, thickness=3)
+
+    def label(self, parent, text='', variable=None, size=11, bold=False, color=INK, wrap=0):
+        return tk.Label(parent, text=text, textvariable=variable, bg=parent.cget('bg'), fg=color,
+                        font=(FONT, size, 'bold' if bold else 'normal'), anchor='w', justify='left', wraplength=wrap)
+
+    def card(self, parent):
+        return tk.Frame(parent, bg=CARD, padx=26, pady=24, highlightbackground='#dfe6dc', highlightthickness=1)
+
+    def button(self, parent, text, command, style='TButton'):
         button = ttk.Button(parent, text=text, command=command, style=style)
-        button.pack(side=side, padx=(0, 8))
         self.buttons.append(button)
         return button
 
+    def _later(self, delay, callback):
+        token = None
+        def invoke():
+            self._timers.remove(token)
+            callback()
+        token = self.after(delay, invoke)
+        self._timers.append(token)
+
+    def destroy(self):
+        self._closed = True
+        for token in self._timers:
+            self.after_cancel(token)
+        self._timers.clear()
+        super().destroy()
+
+    def sync_controls(self):
+        for button in self.buttons:
+            button.configure(state='disabled' if self.working else 'normal')
+        for button, enabled in ((self.launch_button, self.ready), (self.stop_button, self.ready and self.running),
+                                (self.install_button, bool(self.update_info)), (self.notes_button, bool(self.release_notes))):
+            button.configure(state='normal' if enabled and not self.working else 'disabled')
+        self.launch_button.configure(text='打开工作台  →' if self.running else '启动工作台  →')
+
     def set_notes(self, text):
-        self.notes.configure(state='normal')
-        self.notes.delete('1.0', 'end')
-        self.notes.insert('1.0', text)
-        self.notes.configure(state='disabled')
+        self.release_notes = text
+
+    def show_notes(self):
+        dialog = tk.Toplevel(self); dialog.title('更新说明'); dialog.geometry('620x450'); dialog.transient(self)
+        frame = tk.Frame(dialog, bg=CARD, padx=24, pady=24); frame.pack(fill='both', expand=True)
+        self.label(frame, self.release_title.get(), size=18, bold=True).pack(anchor='w', pady=(0, 16))
+        scroll = ttk.Scrollbar(frame); scroll.pack(side='right', fill='y')
+        notes = tk.Text(frame, relief='flat', wrap='word', bg=CARD, fg=INK, font=(FONT, 11), yscrollcommand=scroll.set)
+        notes.insert('1.0', self.release_notes); notes.configure(state='disabled'); notes.pack(fill='both', expand=True)
+        scroll.configure(command=notes.yview)
 
     def progress_message(self, text):
         self.events.put(('message', text))
 
-    def run(self, operation, callback=None):
+    def run(self, operation, callback=None, message='正在处理，请稍候…'):
         if self.working:
             return
         self.working = True
-        for button in self.buttons:
-            button.configure(state='disabled')
-        self.progress.start(12)
+        self.message.set(message); self.message_label.configure(fg=MUTED)
+        self.sync_controls()
+        self.progress.pack(fill='x', pady=(9, 0)); self.progress.start(12)
         def work():
             try:
-                value = operation()
-                self.events.put(('success', (callback, value)))
+                self.events.put(('success', (callback, operation())))
             except Exception as exc:
-                log = ROOT / '.launcher/launcher.log'
-                log.parent.mkdir(parents=True, exist_ok=True)
-                with log.open('a', encoding='utf-8') as f:
-                    f.write(time.strftime('%Y-%m-%d %H:%M:%S') + '\n' + traceback.format_exc() + '\n')
-                message = str(exc) if isinstance(exc, core.LauncherError) else '操作未完成，请检查网络或查看日志后重试。'
-                self.events.put(('error', message))
+                try:
+                    log = ROOT / '.launcher/launcher.log'; log.parent.mkdir(parents=True, exist_ok=True)
+                    with log.open('a', encoding='utf-8') as stream:
+                        stream.write(time.strftime('%Y-%m-%d %H:%M:%S') + '\n' + traceback.format_exc() + '\n')
+                except OSError:
+                    pass
+                detail = str(exc) if isinstance(exc, core.LauncherError) else '操作未完成，请检查网络或查看运行日志后重试。'
+                self.events.put(('error', detail))
         threading.Thread(target=work, daemon=True).start()
 
     def drain(self):
@@ -113,39 +195,51 @@ class Launcher(tk.Tk):
             if event == 'message':
                 self.message.set(value)
                 continue
+            if event == 'check_failed':
+                self.release_title.set('暂时无法检查更新')
+                self.release_text.set('请检查网络后，点击「检查更新」重试。')
+                continue
             self.working = False
-            self.progress.stop()
-            for button in self.buttons:
-                button.configure(state='normal')
-            if not self.update_info:
-                self.install_button.configure(state='disabled')
+            self.progress.stop(); self.progress.pack_forget()
             if event == 'error':
-                self.message.set(value)
+                self.message.set(value); self.message_label.configure(fg='#a14731')
+                if not self.ready:
+                    self.ready = True
+                    self.hero_detail.set('初始化未完成。点击启动可重试，详情见运行日志。')
                 messagebox.showerror('操作未完成', value, parent=self)
             else:
                 callback, result = value
                 if callback:
                     callback(result)
-        self.after(100, self.drain)
+                    if self._closed:
+                        return
+            self.sync_controls()
+        self._later(100, self.drain)
 
     def initialize(self):
         def operation():
             with core.installation_lock(ROOT):
                 core.recover_interrupted(ROOT, self.progress_message)
             return core.control(ROOT)
-        self.run(operation, self.show_state)
+        self.run(operation, self.show_state, '正在检查本地服务…')
 
     def show_state(self, state):
-        self.version.set('当前版本  ' + core.current_version(ROOT)['version'])
+        self.ready = True; self.running = bool(state)
+        self.version.set('v' + core.current_version(ROOT)['version'])
         self.state_text.set('服务运行中' if state else '服务未启动')
-        self.message.set('准备就绪' if not state else '本地服务已就绪')
+        self.state_badge.configure(fg=GREEN if state else MUTED)
+        self.hero_title.set('工作台已就绪' if state else '开始今天的创作')
+        self.hero_detail.set('点击下方按钮，回到浏览器中的内容工作台。' if state else '一键启动本地服务，并在浏览器中打开工作台。')
+        self.message.set('本地服务已就绪 · 关闭窗口后仍可继续使用' if state else '准备就绪 · 点击「启动工作台」开始使用')
+        self.sync_controls()
 
     def launch(self):
+        # Re-check readiness when opening: another launcher may have stopped the service.
         def operation():
             with core.installation_lock(ROOT):
                 core.recover_interrupted(ROOT, self.progress_message)
                 return core.start_service(ROOT, progress=self.progress_message)
-        self.run(operation, lambda value: (self.show_state(value), self.open_page()))
+        self.run(operation, lambda value: (self.show_state(value), self.open_page()), '正在打开工作台…' if self.running else '正在启动工作台，首次启动可能需要稍等…')
 
     def open_page(self):
         webbrowser.open('http://127.0.0.1:' + str(core.config(ROOT)['port']))
@@ -154,36 +248,47 @@ class Launcher(tk.Tk):
         def operation():
             with core.installation_lock(ROOT):
                 core.stop_service(ROOT, self.progress_message)
-        self.run(operation, lambda _: self.show_state(None))
+        self.run(operation, lambda _: self.show_state(None), '正在停止本地服务…')
 
     def check(self):
+        if self.working:
+            return
+        self.update_info = None; self.release_notes = ''
+        self.release_title.set('正在检查…')
+        self.release_text.set('正在获取最新正式版本。')
         def done(value):
             self.update_info = value
             if value:
                 manifest = value['manifest']
-                self.release_text.set('发现新版本 %s · 更新包 %.1f MB' % (manifest['version'], manifest['size'] / 1048576))
+                self.release_title.set('新版本 ' + manifest['version'])
+                self.release_text.set('更新包 %.1f MB\n安装后保留配置、文案和素材。' % (manifest['size'] / 1048576))
                 self.set_notes(value['notes'] or '本次更新没有附带发布说明。')
-                self.install_button.configure(state='normal')
-                self.message.set('签名清单已验证，可以下载并安装')
+                self.message.set('发现新版本，签名已验证 · 可以下载并安装')
             else:
-                self.release_text.set('当前已是最新正式版本')
-                self.install_button.configure(state='disabled')
-                self.message.set('检查完成')
-        self.run(lambda: core.check_update(ROOT, self.progress_message), done)
+                self.release_title.set('已是最新版本')
+                self.release_text.set('当前版本 ' + core.current_version(ROOT)['version'] + '\n你已拥有最新的功能与修复。')
+                self.message.set('检查完成 · 无需更新')
+        def operation():
+            try:
+                return core.check_update(ROOT, self.progress_message)
+            except Exception:
+                self.events.put(('check_failed', None))
+                raise
+        self.run(operation, done, '正在检查最新版本…')
 
     def install(self):
-        if not self.update_info:
+        if not self.update_info or self.working:
             return
-        version = self.update_info['manifest']['version']
-        if not messagebox.askyesno('安装更新', f'安装 {version}？\n\n会先备份并短暂重启本地服务。配置、文案和素材保留；有任务运行时会等待你稍后重试。', parent=self):
+        info = self.update_info
+        version = info['manifest']['version']
+        if not messagebox.askyesno('安装更新', f'安装 {version}？\n\n会先备份并短暂重启本地服务。配置、文案和素材保留；有任务运行时请稍后重试。', parent=self):
             return
         def done(value):
             self.update_info = None
-            self.version.set('当前版本  ' + value)
-            self.install_button.configure(state='disabled')
+            self.version.set('v' + value)
             messagebox.showinfo('更新完成', '已更新至 ' + value + '。启动器将重新打开。', parent=self)
             self.relaunch()
-        self.run(lambda: core.install_update(ROOT, self.update_info, self.progress_message), done)
+        self.run(lambda: core.install_update(ROOT, info, self.progress_message), done, '正在准备更新，请保持启动器打开…')
 
     def relaunch(self):
         python = core.python_path(ROOT)
@@ -199,13 +304,15 @@ class Launcher(tk.Tk):
 
     def settings(self):
         saved = core.config(ROOT)
-        dialog = tk.Toplevel(self); dialog.title('更新源与端口'); dialog.geometry('580x285'); dialog.transient(self); dialog.grab_set()
-        frame = ttk.Frame(dialog, padding=22); frame.pack(fill='both', expand=True)
+        dialog = tk.Toplevel(self); dialog.title('启动器设置'); dialog.geometry('580x340'); dialog.transient(self); dialog.grab_set()
+        frame = tk.Frame(dialog, bg=CARD, padx=24, pady=24); frame.pack(fill='both', expand=True)
         repository = tk.StringVar(value=saved['repository']); port = tk.StringVar(value=str(saved['port']))
-        ttk.Label(frame, text='GitHub 公开更新仓库').pack(anchor='w')
-        ttk.Entry(frame, textvariable=repository).pack(fill='x', pady=(6, 14))
-        ttk.Label(frame, text='本地服务端口（停止服务后可修改）').pack(anchor='w')
-        ttk.Entry(frame, textvariable=port).pack(fill='x', pady=(6, 14))
+        self.label(frame, '更新与连接', size=17, bold=True).pack(anchor='w', pady=(0, 18))
+        self.label(frame, 'GitHub 公开更新仓库', size=10).pack(anchor='w')
+        ttk.Entry(frame, textvariable=repository, font=(FONT, 11)).pack(fill='x', pady=(6, 14))
+        self.label(frame, '本地服务端口（停止服务后可修改）', size=10).pack(anchor='w')
+        ttk.Entry(frame, textvariable=port, font=(FONT, 11)).pack(fill='x', pady=(6, 12))
+        self.label(frame, 'API 与模型请在网页「模型与访问设置」中修改。', size=10, color=MUTED).pack(anchor='w')
         def save():
             try:
                 value = {'repository': core.repository_name(repository.get()), 'port': int(port.get())}
@@ -215,11 +322,16 @@ class Launcher(tk.Tk):
                     if value['port'] != saved['port'] and core.control(ROOT):
                         raise core.LauncherError('请先停止当前服务，再修改端口')
                     core.atomic_json(ROOT / 'launcher-config.json', value)
-                self.update_info = None; self.install_button.configure(state='disabled')
-                dialog.destroy(); self.message.set('设置已保存')
+                self.update_info = None; self.release_notes = ''
+                self.release_title.set('当前版本 ' + core.current_version(ROOT)['version'])
+                self.release_text.set('设置已变更，请重新检查更新。')
+                self.sync_controls(); dialog.destroy(); self.message.set('设置已保存')
             except (core.LauncherError, ValueError) as exc:
                 messagebox.showerror('设置未保存', str(exc) or '端口应为 1024–65535 的整数', parent=dialog)
-        ttk.Button(frame, text='保存设置', command=save).pack(anchor='e')
+        ttk.Button(frame, text='保存设置', command=save, style='Primary.TButton').pack(anchor='e', pady=(16, 0))
+
+    def release_page(self):
+        webbrowser.open('https://github.com/' + core.config(ROOT)['repository'] + '/releases')
 
     def logs(self):
         path = ROOT / '.launcher'; path.mkdir(exist_ok=True)
@@ -236,9 +348,7 @@ class Launcher(tk.Tk):
 
 
 if __name__ == '__main__':
+    window = Launcher()
     if '--smoke' in sys.argv:
-        window = Launcher()
         window.after(1400, window.destroy)
-        window.mainloop()
-    else:
-        Launcher().mainloop()
+    window.mainloop()

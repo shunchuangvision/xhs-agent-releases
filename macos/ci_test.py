@@ -165,6 +165,8 @@ def inside(build, root):
             window.update(); time.sleep(.05)
         assert not window.working and window.state_text.get() == '服务未启动'
         window.destroy()
+        from ui_test import exercise
+        ui_result = exercise(ui, root, release)
         # Restore the production public key for subsequent first-launch smoke test.
         shutil.copy2(build / 'payload/launcher/release-public.pem', root / 'launcher/release-public.pem')
         result = {'status': 'passed', 'platform': target_platform, 'generation': True, 'native_tk_ui': True,
@@ -172,6 +174,7 @@ def inside(build, root):
                   'config_preserved': True, 'private_control': True, 'busy_stop_protection': True,
                   'worker_after_upgrade': True, 'web_model_setup': True, 'saved_model_after_upgrade': True,
                   'external_model_calls': 0}
+        result.update(ui_result)
         (release / f'test-result-{target_platform}.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result), flush=True)
     finally:
