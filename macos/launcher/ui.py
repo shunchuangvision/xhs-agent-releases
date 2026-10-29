@@ -34,6 +34,7 @@ class Launcher(tk.Tk):
         self.buttons = []
         self._timers = []
         self._closed = False
+        self._closing = False
         self._styles()
         outer = tk.Frame(self, bg=BG, padx=30, pady=26)
         outer.pack(fill='both', expand=True)
@@ -90,7 +91,7 @@ class Launcher(tk.Tk):
         footer = tk.Frame(outer, bg=BG); footer.pack(side='bottom', fill='x', pady=(18, 10))
         for text, command in (('启动器设置', self.settings), ('运行日志', self.logs), ('版本发布页', self.release_page)):
             self.button(footer, text, command, 'Footer.TButton').pack(side='left', padx=(0, 10))
-        self.label(footer, '关闭此窗口后，服务继续运行', color=MUTED, size=9).pack(side='right')
+        self.label(footer, '关闭启动器时，自动停止本服务', color=MUTED, size=9).pack(side='right')
         status = tk.Frame(outer, bg='#e9eee8', padx=14, pady=10)
         status.pack(side='bottom', fill='x', before=footer)
         self.message = tk.StringVar(value='正在初始化…')
@@ -99,6 +100,9 @@ class Launcher(tk.Tk):
         self.progress = ttk.Progressbar(status, mode='indeterminate', style='Green.Horizontal.TProgressbar')
         cards.pack(fill='both', expand=True)
         self.protocol('WM_DELETE_WINDOW', self.close)
+        if sys.platform == 'darwin':
+            # Cmd+Q / application-menu Quit must follow the same shutdown path.
+            self.createcommand('tk::mac::Quit', self.close)
         self.sync_controls()
         self._later(100, self.drain)
         self._later(200, self.initialize)
@@ -202,6 +206,7 @@ class Launcher(tk.Tk):
             self.working = False
             self.progress.stop(); self.progress.pack_forget()
             if event == 'error':
+                self._closing = False
                 self.message.set(value); self.message_label.configure(fg='#a14731')
                 if not self.ready:
                     self.ready = True
@@ -230,7 +235,7 @@ class Launcher(tk.Tk):
         self.state_badge.configure(fg=GREEN if state else MUTED)
         self.hero_title.set('工作台已就绪' if state else '开始今天的创作')
         self.hero_detail.set('点击下方按钮，回到浏览器中的内容工作台。' if state else '一键启动本地服务，并在浏览器中打开工作台。')
-        self.message.set('本地服务已就绪 · 关闭窗口后仍可继续使用' if state else '准备就绪 · 点击「启动工作台」开始使用')
+        self.message.set('本地服务已就绪 · 关闭启动器会自动停止服务' if state else '准备就绪 · 点击「启动工作台」开始使用')
         self.sync_controls()
 
     def launch(self):
@@ -341,10 +346,26 @@ class Launcher(tk.Tk):
             os.startfile(path)
 
     def close(self):
+        if self._closing:
+            return
         if self.working:
             messagebox.showinfo('操作进行中', '请等待当前操作完成后再关闭启动器。', parent=self)
             return
-        self.destroy()
+        self._closing = True
+        def operation():
+            with core.installation_lock(ROOT):
+                try:
+                    # Recheck the authenticated service, including a service
+                    # started by another launcher for this same installation.
+                    core.stop_service(ROOT, self.progress_message)
+                except core.ServiceConflict:
+                    return '本启动器将退出。当前端口属于其他程序或另一份安装，未停止它；请使用对应目录的启动器停止原服务。'
+            return None
+        def done(notice):
+            if notice:
+                messagebox.showinfo('未操作其他服务', notice, parent=self)
+            self.destroy()
+        self.run(operation, done, '正在停止后台服务和任务进程，完成后自动退出…')
 
 
 if __name__ == '__main__':

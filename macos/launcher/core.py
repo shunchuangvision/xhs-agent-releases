@@ -48,6 +48,10 @@ class LauncherError(Exception):
     pass
 
 
+class ServiceConflict(LauncherError):
+    """The listener cannot be authenticated as this installation; never stop it."""
+
+
 def version_tuple(value):
     if not isinstance(value, str) or not re.fullmatch(r'\d{1,4}\.\d{1,4}\.\d{1,4}', value):
         raise LauncherError('版本号必须为三段数字，例如 3.2.0')
@@ -355,12 +359,14 @@ def control(root, action='status', timeout=4):
         with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout) as response:
             data = json.load(response)
         if data.get('root_id') != hashlib.sha256(str(Path(root).resolve()).casefold().encode()).hexdigest():
-            raise LauncherError('此端口属于另一份应用，未操作该服务')
+            raise ServiceConflict('此端口属于另一份应用，未操作该服务')
         return data
     except urllib.error.HTTPError as exc:
         if exc.code == 409:
             raise LauncherError('当前仍有生成或运营任务，请等待完成后再停止或更新') from None
-        raise LauncherError('端口被旧启动方式或其他程序占用，请先关闭原服务，或在设置中换一个端口') from None
+        if exc.code in (401, 403, 404):
+            raise ServiceConflict('端口被旧启动方式或其他程序占用，请先关闭原服务，或在设置中换一个端口') from None
+        raise LauncherError('本地服务暂时未能响应，请查看运行日志后重试') from None
     except (urllib.error.URLError, TimeoutError, ConnectionError):
         return None
 
@@ -442,6 +448,11 @@ def start_service(root, maintenance=False, progress=lambda _: None):
 def stop_service(root, progress=lambda _: None):
     state = control(root)
     if not state:
+        # A control timeout must not masquerade as a stopped service.
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            if probe.connect_ex(('127.0.0.1', config(root)['port'])) == 0:
+                raise LauncherError('端口仍在使用，但服务未响应停止检查。启动器暂不退出，请稍后重试或查看运行日志')
         return False
     progress('正在等待服务安全停止…')
     control(root, 'stop')

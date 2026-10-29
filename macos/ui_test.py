@@ -110,7 +110,11 @@ def exercise(ui, root, output):
         assert '最新' in window.release_title.get() and enabled(window.check_button)
         assert not enabled(window.install_button)
         # Closing cancels callbacks; no callbacks from destroyed windows affect the next launch.
-        window.close(); assert window._closed and not window._timers
+        window.close()
+        deadline = time.monotonic() + 12
+        while not window._closed and time.monotonic() < deadline:
+            window.update(); time.sleep(.03)
+        assert window._closed and not window._timers
         return {'ui_state_transitions': True, 'ui_error_retry': True, 'ui_busy_guard': True,
                 'ui_layout_at_minimum_size': True, 'ui_settings_validation': True,
                 'ui_screenshots': True, 'external_model_calls': 0}

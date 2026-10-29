@@ -178,6 +178,8 @@ def inside(build, root):
         window.destroy()
         from ui_test import exercise
         ui_result = exercise(ui, root, release)
+        from close_test import exercise as check_close
+        close_result = check_close(ui, root)
         # Restore the production public key for subsequent first-launch smoke test.
         shutil.copy2(build / 'payload/launcher/release-public.pem', root / 'launcher/release-public.pem')
         result = {'status': 'passed', 'platform': target_platform, 'generation': True, 'native_tk_ui': True,
@@ -187,6 +189,7 @@ def inside(build, root):
                   'external_model_calls': 0}
         result.update(ui_result)
         result.update(media_result)
+        result.update(close_result)
         (release / f'test-result-{target_platform}.json').write_text(json.dumps(result, indent=2))
         print(json.dumps(result), flush=True)
     finally:
