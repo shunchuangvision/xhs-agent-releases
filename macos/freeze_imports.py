@@ -50,3 +50,12 @@ import pydantic
 import pypdf
 import sqlalchemy
 import uvicorn
+
+# Reference-page parsing and the bundled WebSocket client use these stdlib modules.
+import html.parser
+import http.client
+import ipaddress
+import zlib
+import selectors
+import array
+import struct

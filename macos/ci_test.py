@@ -15,6 +15,8 @@ from zipfile import ZipFile
 
 
 def outer(build):
+    from safari_test import exercise as check_safari
+    safari_result = check_safari(build)
     # Run the provider stub in the host Python, independent of the frozen application.
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import threading
@@ -63,6 +65,7 @@ def outer(build):
     result = build / 'release' / ('test-result-' + json.loads((root / 'version.json').read_text())['platform'] + '.json')
     value = json.loads(result.read_text()); value['finder_bootstrap_and_reopen'] = True
     value['browser_extension_included'] = True
+    value.update(safari_result)
     result.write_text(json.dumps(value, indent=2))
     provider.shutdown()
 
@@ -137,8 +140,11 @@ def inside(build, root):
             'model': 'mac-ci-model', 'api_key': 'mac-ci-synthetic-key', 'revision': config['revision']})
         assert saved['configured'] and 'mac-ci-synthetic-key' not in json.dumps(saved)
         assert api('/health')['model'] == 'mac-ci-model'
-        from media_test import configure, exercise as exercise_media
+        from reference_test import configure, exercise as exercise_media
         configure(api)
+        session_marker = root / 'data/browser-session/xiaohongshu/synthetic-preservation.txt'
+        session_marker.parent.mkdir(parents=True, exist_ok=True)
+        session_marker.write_text('synthetic browser profile marker')
         before_env = (root / '.env').read_bytes()
         assert b'APP_TOKEN=mac-ci-only' in before_env
         with core.installation_lock(root):
@@ -147,6 +153,7 @@ def inside(build, root):
         assert core.current_version(root)['version'] == manifest['version']
         assert core.control(root)['maintenance'] is False
         assert (root / '.env').read_bytes() == before_env
+        assert session_marker.read_text() == 'synthetic browser profile marker'
         assert api('/model-config')['configured']
         assert api('/health')['model'] == 'mac-ci-model'
         assert core.config(root)['port'] == 18018

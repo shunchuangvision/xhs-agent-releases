@@ -20,6 +20,16 @@
 
 更新期间如果有生成任务，会拒绝安装并提示稍后重试。更新包校验签名和哈希，安装前备份程序及 SQLite 数据库，启动校验失败时恢复备份。外部 PostgreSQL 数据库仍需管理员手工备份升级。
 
+## 登录账号采集与 Safari
+
+参考内容 → 链接采集 → 使用登录账号，可选 Chrome、Edge 或 Safari。默认启用“关闭登录窗口后仍可采集”。Chrome / Edge 使用单独保存的登录环境，关闭窗口后按需无窗口重开；Safari 使用自己的登录账号，按需打开并最小化专用采集窗口。
+
+Safari 需要在设置中开启开发者功能及“允许来自 Apple Events 的 JavaScript”，并在系统弹窗中允许 XHS Agent 控制 Safari。请在专用窗口核对账号。采集中不要强制退出 Safari；断开采集不会退出 Safari 账号。
+
+3.3.1 的 .app 增加 Safari 自动化权限说明。已有旧版 .app 的用户，先在启动器完成程序更新，再用本版 DMG/ZIP 将“应用程序”中的 XHS-Agent.app 替换一次。数据目录保留，API 和文案无需重新配置。仅替换 .app 不会自动覆盖数据目录中的旧程序，请先执行启动器更新。
+
+Safari 的真实账号登录和系统授权仍需用户首次操作，构建检查不代替真实账号验收。
+
 ## 维护者
 
 GitHub Actions 的 `Build macOS` 工作流在 Apple 芯片和 Intel Mac 上分别构建。基础业务代码来自对应 Windows Release 的签名更新包，`macos/launcher` 提供共用启动器的 Mac 适配层。后续版本先创建预发布（Pre-release），附带同版本 Windows 的签名更新资产，再运行 Mac 构建；三个平台资产与签名齐全后，才把版本设为正式发布和 Latest，以免现有启动器检查到不完整的发布。

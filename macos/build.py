@@ -101,6 +101,7 @@ def build(args):
         'CFBundleIdentifier': 'com.shunchuangvision.xhs-agent', 'CFBundleExecutable': 'XHS-Agent',
         'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': args.version, 'CFBundleVersion': args.version,
         'LSMinimumSystemVersion': '14.0', 'NSHighResolutionCapable': True,
+        'NSAppleEventsUsageDescription': '按你的操作打开 Safari，并读取你提交的小红书笔记文案与配图。',
         'NSHumanReadableCopyright': 'XHS Agent · 本地内容运营工作台'}
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     run(['codesign', '--force', '--deep', '--sign', '-', app])
