@@ -147,8 +147,16 @@ def inside(build, root):
         session_marker.write_text('synthetic browser profile marker')
         before_env = (root / '.env').read_bytes()
         assert b'APP_TOKEN=mac-ci-only' in before_env
-        with core.installation_lock(root):
-            core.apply_package(root, release / manifest['archive'], raw, sig, print)
+        sys.path.insert(0, str(Path(__file__).resolve().parent / 'manual-update'))
+        from manual_upgrade import upgrade as manual_upgrade
+        def fetch_manual(url, target, limit):
+            assert 'api.github.com' not in url
+            if target.suffix == '.sig':
+                target.write_bytes(sig)
+            else:
+                shutil.copy2(release / target.name, target)
+        subprocess.run(['/bin/bash', '-n', str(Path(__file__).resolve().parent / 'manual-update/XHS-Agent-Mac-Update.command')], check=True)
+        assert manual_upgrade(root, core, fetch_manual) == 'updated' 
         assert not core.process_alive(state['pid'])
         assert core.current_version(root)['version'] == manifest['version']
         assert core.control(root)['maintenance'] is False
@@ -182,11 +190,25 @@ def inside(build, root):
         close_result = check_close(ui, root)
         # Restore the production public key for subsequent first-launch smoke test.
         shutil.copy2(build / 'payload/launcher/release-public.pem', root / 'launcher/release-public.pem')
+        real_fetch = core.fetch
+        release_requests = []
+        def no_api(url, *a, **k):
+            assert 'api.github.com' not in url, 'REST API must not be required'
+            release_requests.append(url)
+            return real_fetch(url, *a, **k)
+        core.fetch = no_api
+        core._UPDATE_CHECK_CACHE.clear()
+        try:
+            core.check_update(root)
+            assert len(release_requests) == 2
+        finally:
+            core.fetch = real_fetch
+            core._UPDATE_CHECK_CACHE.clear()
         result = {'status': 'passed', 'platform': target_platform, 'generation': True, 'native_tk_ui': True,
                   'signed_upgrade': True, 'separate_runtime_version': True, 'data_preserved': True,
                   'config_preserved': True, 'private_control': True, 'busy_stop_protection': True,
                   'worker_after_upgrade': True, 'web_model_setup': True, 'saved_model_after_upgrade': True,
-                  'external_model_calls': 0}
+                  'external_model_calls': 0, 'manual_signed_upgrade': True, 'update_without_rest_api': True}
         result.update(ui_result)
         result.update(media_result)
         result.update(close_result)

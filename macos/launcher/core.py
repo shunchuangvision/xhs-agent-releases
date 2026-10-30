@@ -4,6 +4,8 @@ import base64
 from contextlib import contextmanager
 import ctypes
 import hashlib
+import http.client
+import ssl
 import json
 import os
 import platform
@@ -198,9 +200,49 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def network_route(url):
+    """Describe the effective route without exposing proxy credentials."""
+    host = urllib.parse.urlsplit(url).hostname or 'github.com'
+    try:
+        proxies = urllib.request.getproxies()
+        if urllib.request.proxy_bypass(host):
+            return '直连 ' + host
+        proxy = proxies.get('https')
+        if proxy:
+            parsed = urllib.parse.urlsplit(proxy if '://' in proxy else '//' + proxy)
+            address = parsed.hostname or '已配置代理'
+            if ':' in address:
+                address = '[' + address + ']'
+            if parsed.port:
+                address += ':' + str(parsed.port)
+            return '代理 ' + address + ' → ' + host
+    except (OSError, ValueError):
+        return '系统或环境代理设置 → ' + host
+    return '直连 ' + host
+
+
+def rate_limit_hint(headers):
+    now = time.time()
+    try:
+        wait = int(headers.get('Retry-After', ''))
+        if wait > 0:
+            return '请至少等待 %s 秒再试。' % wait
+    except (ValueError, TypeError, OverflowError):
+        pass
+    try:
+        reset = int(headers.get('X-RateLimit-Reset', ''))
+        if reset > now:
+            return '服务端预计恢复时间：%s（本机时间）。' % time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(reset))
+        if reset > 0:
+            return '服务端返回的恢复时间已过，请检查代理缓存或共享出口是否再次耗尽额度。'
+    except (ValueError, TypeError, OverflowError, OSError):
+        pass
+    return '请稍后再试，避免连续点击。'
+
+
 def fetch(url, limit, destination=None, progress=lambda _: None):
     https_url(url)
-    request = urllib.request.Request(url, headers={'User-Agent': 'XHS-Agent-Launcher/1', 'Accept': 'application/vnd.github+json' if 'api.github.com' in url else '*/*'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'XHS-Agent-Launcher/1', 'Accept': 'application/vnd.github+json' if urllib.parse.urlsplit(url).hostname == 'api.github.com' else '*/*'})
     opener = urllib.request.build_opener(SafeRedirect)
     try:
         with opener.open(request, timeout=35) as response:
@@ -225,13 +267,46 @@ def fetch(url, limit, destination=None, progress=lambda _: None):
                     output.close()
             return b''.join(chunks) if not destination else received
     except urllib.error.HTTPError as exc:
+        headers = exc.headers or {}
+        # Inspect only a small JSON error field; never display an arbitrary proxy page.
+        message = ''
+        try:
+            payload = json.loads(exc.read(8192))
+            if isinstance(payload, dict):
+                message = str(payload.get('message', '')).lower()
+        except (ValueError, OSError, http.client.HTTPException):
+            pass
+        finally:
+            exc.close()
+        route = network_route(url)
+        if exc.code in (403, 429) and (exc.code == 429 or headers.get('X-RateLimit-Remaining') == '0'
+                or 'rate limit' in message or 'abuse detection' in message):
+            raise LauncherError('GitHub 请求限流（HTTP %s）。%s\n网络路径：%s。共享出口额度可能被其他用户使用。' %
+                                (exc.code, rate_limit_hint(headers), route)) from None
+        if exc.code == 403:
+            raise LauncherError('GitHub 拒绝访问（HTTP 403），未收到明确的限流信息。\n网络路径：%s。请检查代理或网络访问规则。' % route) from None
+        if exc.code == 407:
+            raise LauncherError('代理要求认证（HTTP 407）。请在代理软件中完成认证。\n网络路径：' + route) from None
         if exc.code == 404:
-            raise LauncherError('尚未发布正式更新，或更新仓库不可公开访问') from None
-        if exc.code in (403, 429):
-            raise LauncherError('GitHub 暂时限制请求，请稍后再试') from None
-        raise LauncherError('GitHub 下载失败（HTTP %s）' % exc.code) from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise LauncherError('无法连接 GitHub，请检查网络后重试；当前版本未改动') from None
+            raise LauncherError('未找到此系统的签名更新文件（HTTP 404）。请检查更新仓库及版本发布页。') from None
+        raise LauncherError('GitHub 更新文件请求失败（HTTP %s）。\n网络路径：%s。' % (exc.code, route)) from None
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+        reason = getattr(exc, 'reason', exc)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            detail = 'TLS 证书校验失败，请检查系统时间、网络或代理证书；未关闭安全校验'
+        elif isinstance(reason, ssl.SSLError):
+            detail = 'TLS 连接失败，请检查代理与网络连接'
+        elif isinstance(reason, socket.gaierror):
+            detail = '域名解析失败，请检查 DNS 与代理设置'
+        elif isinstance(reason, ConnectionRefusedError):
+            detail = '连接被拒绝，请确认代理软件正在运行、监听端口与系统设置一致'
+        elif isinstance(reason, TimeoutError):
+            detail = '连接或下载超时，请检查当前网络及代理是否可用'
+        elif isinstance(reason, PermissionError):
+            detail = '无法写入更新文件，请检查安装目录权限'
+        else:
+            detail = '连接或下载中断（%s），请检查网络及代理' % type(reason).__name__
+        raise LauncherError('%s。\n网络路径：%s。当前版本未改动。' % (detail, network_route(url))) from None
 
 
 def verify_manifest(raw, signature_raw, public_key):
@@ -289,31 +364,43 @@ def verify_manifest(raw, signature_raw, public_key):
         raise LauncherError('更新清单格式错误或包含受保护路径') from exc
 
 
+_UPDATE_CHECK_CACHE = {}
+UPDATE_CHECK_TTL = 60
+
+
 def check_update(root, progress=lambda _: None):
     root = Path(root)
     repository = config(root)['repository']
-    progress('正在连接 GitHub，检查最新正式版本…')
-    release = json.loads(fetch(f'https://api.github.com/repos/{repository}/releases/latest', 2 * 1024 * 1024))
-    if release.get('draft') or release.get('prerelease'):
-        raise LauncherError('当前通道仅接受正式版本')
-    assets = {a['name']: a for a in release.get('assets', [])}
     manifest_name, signature_name = manifest_names()
-    if not {manifest_name, signature_name} <= assets.keys():
-        raise LauncherError('此 Release 未附带签名更新清单，请联系发布者')
-    raw = fetch(assets[manifest_name]['browser_download_url'], 4 * 1024 * 1024)
-    signature = fetch(assets[signature_name]['browser_download_url'], 8192)
-    manifest = verify_manifest(raw, signature, root / 'launcher/release-public.pem')
-    if release.get('tag_name', '').removeprefix('v') != manifest['version']:
-        raise LauncherError('发布标签与签名版本不一致')
-    asset = assets.get(manifest['archive'])
-    if not asset or asset['size'] != manifest['size']:
-        raise LauncherError('Release 缺少对应更新包或文件大小不一致')
-    if asset.get('digest') and asset['digest'] != 'sha256:' + manifest['sha256']:
-        raise LauncherError('GitHub 文件摘要与签名清单不一致')
+    public_key = root / 'launcher/release-public.pem'
+    key = (str(root.resolve()), repository, manifest_name, sha256(public_key))
+    cached = _UPDATE_CHECK_CACHE.get(key)
+    if cached and 0 <= time.monotonic() - cached[0] < UPDATE_CHECK_TTL:
+        progress('使用最近 1 分钟内已验证的更新清单…')
+        raw, signature = cached[1:]
+        manifest = verify_manifest(raw, signature, public_key)
+    else:
+        progress('正在读取 GitHub Release 签名更新清单…')
+        raw = fetch(f'https://github.com/{repository}/releases/latest/download/{manifest_name}', 4 * 1024 * 1024)
+        try:
+            candidate = json.loads(raw)['version']
+            version_tuple(candidate)
+        except (ValueError, KeyError, TypeError, LauncherError):
+            raise LauncherError('最新更新清单格式异常，已停止更新') from None
+        # The untrusted candidate is used only as a strictly numeric version in a
+        # fixed GitHub path. No download may be installed until signature validation.
+        signature = fetch(f'https://github.com/{repository}/releases/download/v{candidate}/{signature_name}', 8192)
+        manifest = verify_manifest(raw, signature, public_key)
+        if len(_UPDATE_CHECK_CACHE) >= 16:
+            _UPDATE_CHECK_CACHE.clear()
+        _UPDATE_CHECK_CACHE[key] = (time.monotonic(), raw, signature)
     if version_tuple(manifest['version']) <= version_tuple(current_version(root)['version']):
         return None
+    release_url = f'https://github.com/{repository}/releases/tag/v{manifest["version"]}'
+    archive_url = f'https://github.com/{repository}/releases/download/v{manifest["version"]}/{manifest["archive"]}'
+    notes = '版本 %s\n更新包签名已验证，安装时会再次校验完整性。\n完整更新说明：\n%s' % (manifest['version'], release_url)
     return {'manifest': manifest, 'raw': raw, 'signature': signature,
-            'url': https_url(asset['browser_download_url']), 'notes': str(release.get('body') or '')[:16000]}
+            'url': https_url(archive_url), 'notes': notes, 'release_url': release_url}
 
 
 def extract_verified(archive, manifest, destination):

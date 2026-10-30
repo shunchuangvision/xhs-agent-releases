@@ -169,17 +169,14 @@ def test_untrusted_download_hosts_rejected(url):
 
 def test_github_latest_release_and_matching_assets(installation,tmp_path,monkeypatch):
     root,key,public=installation;archive,raw,sig,manifest=package(tmp_path,key,public)
-    assets=[{'name':name,'browser_download_url':'https://github.com/o/r/releases/download/v3.2.0/'+name,
-             'size':len(data),'digest':'sha256:'+hashlib.sha256(data).hexdigest()}
-            for name,data in [('update-manifest.json',raw),('update-manifest.sig',sig),(archive.name,archive.read_bytes())]]
-    release={'tag_name':'v3.2.0','assets':assets,'body':'release notes','draft':False,'prerelease':False}
     def fetch(url,*args):
-        if url.endswith('/latest'):return json.dumps(release).encode()
+        assert 'api.github.com' not in url
         return raw if url.endswith('.json') else sig
     monkeypatch.setattr(core,'fetch',fetch)
     found=core.check_update(root)
     assert found['manifest']['version']=='3.2.0'
     core.atomic_json(root/'version.json',{'version':'3.2.0'})
     assert core.check_update(root) is None
-    release['tag_name']='v3.9.0'
-    with pytest.raises(core.LauncherError,match='不一致'):core.check_update(root)
+    core._UPDATE_CHECK_CACHE.clear()
+    monkeypatch.setattr(core,'fetch',lambda url,*a: raw+b' ' if url.endswith('.json') else sig)
+    with pytest.raises(core.LauncherError,match='签名'):core.check_update(root)

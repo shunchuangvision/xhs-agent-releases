@@ -67,14 +67,10 @@ def test_mixed_platform_release_selects_own_signed_manifest(tmp_path, monkeypatc
     root = tmp_path / 'app'; (root / 'launcher').mkdir(parents=True)
     (root / 'launcher/release-public.pem').write_bytes(trust.read_bytes())
     core.atomic_json(root / 'version.json', {'version': '3.1.9', 'dependencies': '3.1.9'})
-    responses = {'https://github.com/mac-manifest': raw, 'https://github.com/mac-sig': sig}
-    assets = [{'name': n, 'size': len(v), 'browser_download_url': u} for n, v, u in [
-        ('update-manifest-macos-arm64.json', raw, 'https://github.com/mac-manifest'),
-        ('update-manifest-macos-arm64.sig', sig, 'https://github.com/mac-sig')]]
-    assets.extend([{'name': archive.name, 'size': archive.stat().st_size, 'browser_download_url': 'https://github.com/mac-zip'},
-                   {'name': 'update-manifest.json', 'browser_download_url': 'https://github.com/windows-should-not-be-used'}])
-    responses[f'https://api.github.com/repos/{core.REPOSITORY}/releases/latest'] = json.dumps({'tag_name': 'v3.2.0', 'assets': assets}).encode()
+    prefix = f'https://github.com/{core.REPOSITORY}/releases/'
+    responses = {prefix+'latest/download/update-manifest-macos-arm64.json': raw,
+                 prefix+'download/v3.2.0/update-manifest-macos-arm64.sig': sig}
     monkeypatch.setattr(core, 'fetch', lambda url, *args: responses[url])
     update = core.check_update(root)
     assert update['manifest']['platform'] == 'macos-arm64'
-    assert update['url'] == 'https://github.com/mac-zip'
+    assert update['url'] == prefix+'download/v3.2.0/'+archive.name

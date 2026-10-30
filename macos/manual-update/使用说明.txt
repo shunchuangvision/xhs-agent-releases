@@ -1,0 +1,30 @@
+XHS Agent · Mac 3.3.3 签名手动升级工具
+
+用途
+用于已有 Mac 安装（例如 3.2.4）在检查更新时被 GitHub API 限流的情况。
+直接下载官方 v3.3.3 Release 中对应芯片的清单、签名和更新包，
+不访问 api.github.com，不需要 GitHub 令牌，也不需要重新填写模型密钥。
+
+使用
+1. 把 ZIP 发送到出问题的 Mac，完整解压到“下载”目录。
+2. 等当前任务完成，关闭 XHS Agent 启动器窗口。
+3. 打开“终端”，输入 bash 和一个空格，然后把解压后的
+   XHS-Agent-Mac-Update.command 文件拖到终端中，按回车运行。
+4. 出现“已更新至 3.3.3”后，重新打开原来的 XHS-Agent.app。
+   无需删除或替换数据目录。
+
+安全与限制
+使用已安装程序中的 Ed25519 公钥验证清单，校验包大小和 SHA-256，
+再调用原有更新器完成备份、服务重启检查和失败回滚。
+有任务运行、启动器窗口未关闭、签名或文件校验不通过时会停止。
+保留已有 .env、模型密钥、数据库、素材和浏览器登录资料。
+工具不修改系统代理，不上传本机资料，不调用模型。
+
+此工具升级到 3.3.3，包含不依赖匿名 API 的在线更新修复。
+如果 github.com 的 Release 文件本身也无法下载，工具会提示下载失败。
+此工具不为旧 .app 外壳补充 Safari 自动化授权说明；需要 Safari 功能的
+旧版用户，可在升级成功后用 v3.3.3 对应芯片的完整 .app 替换原应用，
+但保留 ~/Library/Application Support/XHS-Agent 数据目录。
+
+发布页
+https://github.com/shunchuangvision/xhs-agent-releases/releases/tag/v3.3.3
